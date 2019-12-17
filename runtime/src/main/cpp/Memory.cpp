@@ -1,5 +1,5 @@
 /*
- * Copyright 2010-2018 JetBrains s.r.o.
+ * Copyright 2010-2019 JetBrains s.r.o.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,6 +22,7 @@
 #include "Alloc.h"
 #include "KAssert.h"
 #include "Atomic.h"
+#include "CyclicCollector.h"
 #include "Exceptions.h"
 #include "KString.h"
 #include "Memory.h"
@@ -113,6 +114,8 @@ KBoolean g_checkLeaks = KonanNeedDebugInfo;
 // Only used by the leak detector.
 KRef g_leakCheckerGlobalList = nullptr;
 KInt g_leakCheckerGlobalLock = 0;
+
+bool g_hasCyclicCollector = true;
 
 // TODO: can we pass this variable as an explicit argument?
 THREAD_LOCAL_VARIABLE MemoryState* memoryState = nullptr;
@@ -300,8 +303,6 @@ inline bool isPermanentOrFrozen(ContainerHeader* container) {
 inline bool isShareable(ContainerHeader* container) {
     return container == nullptr || container->shareable();
 }
-
-void garbageCollect();
 
 }  // namespace
 
@@ -540,6 +541,7 @@ namespace {
 void freeContainer(ContainerHeader* header) NO_INLINE;
 #if USE_GC
 void garbageCollect(MemoryState* state, bool force) NO_INLINE;
+void cyclicGarbageCollect() NO_INLINE;
 void rememberNewContainer(ContainerHeader* container);
 #endif  // USE_GC
 
@@ -944,6 +946,7 @@ void runDeallocationHooks(ContainerHeader* container) {
         if (obj == g_leakCheckerGlobalList)
           g_leakCheckerGlobalList = next;
         unlock(&g_leakCheckerGlobalLock);
+        cyclicRemoveAtomicRoot(obj);
       }
       ObjHeader::destroyMetaObject(&obj->typeInfoOrMeta_);
     }
@@ -1741,12 +1744,20 @@ MemoryState* initMemory() {
 #endif
   memoryState->tlsMap = konanConstructInstance<KThreadLocalStorageMap>();
   memoryState->foreignRefManager = ForeignRefManager::create();
-  atomicAdd(&aliveMemoryStatesCount, 1);
+  bool firstMemoryState = atomicAdd(&aliveMemoryStatesCount, 1) == 1;
+  if (firstMemoryState) {
+    cyclicInit();
+  }
   return memoryState;
 }
 
 void deinitMemory(MemoryState* memoryState) {
 #if USE_GC
+  bool lastMemoryState = atomicAdd(&aliveMemoryStatesCount, -1) == 0;
+  if (lastMemoryState) {
+   garbageCollect(memoryState, true);
+   cyclicDeinit();
+  }
   // Actual GC only implemented in strict memory model at the moment.
   do {
     GC_LOG("Calling garbageCollect from DeinitMemory()\n")
@@ -1763,8 +1774,6 @@ void deinitMemory(MemoryState* memoryState) {
   RuntimeAssert(memoryState->finalizerQueueSize == 0, "Finalizer queue must be empty");
 
 #endif // USE_GC
-
-  bool lastMemoryState = atomicAdd(&aliveMemoryStatesCount, -1) == 0;
 
 #if TRACE_MEMORY
   if (IsStrictMemoryModel && lastMemoryState && allocCount > 0) {
@@ -1934,6 +1943,7 @@ OBJ_GETTER(allocInstance, const TypeInfo* type_info) {
     if (old != nullptr)
       old->meta_object()->LeakDetector.previous_ = obj;
     unlock(&g_leakCheckerGlobalLock);
+    cyclicAddAtomicRoot(obj);
   }
 #if USE_GC
   if (Strict) {
@@ -2065,6 +2075,7 @@ OBJ_GETTER(swapHeapRefLocked,
   if (oldValue == expectedValue) {
     SetHeapRef(location, newValue);
     shallRelease = oldValue != nullptr;
+    cyclicMutateAtomicRoot(newValue);
   } else {
     if (IsStrictMemoryModel && oldValue != nullptr)
       rememberNewContainer(oldValue->container());
@@ -2085,6 +2096,7 @@ void setHeapRefLocked(ObjHeader** location, ObjHeader* newValue, int32_t* spinlo
   ObjHeader* oldValue = *location;
   // We do not use UpdateRef() here to avoid having ReleaseRef() on old value under the lock.
   SetHeapRef(location, newValue);
+  cyclicMutateAtomicRoot(newValue);
   unlock(spinlock);
   if (oldValue != nullptr)
     ReleaseHeapRef(oldValue);
@@ -2585,6 +2597,7 @@ OBJ_GETTER0(detectCyclicReferences) {
     while (!toVisit.empty() && !seenToRoot) {
       KRef current = toVisit.front();
       toVisit.pop_front();
+      if (cyclic.count(current) != 0) continue;
       if (current == root) seenToRoot = true;
       // TODO: racy against concurrent mutators.
       if (seen.count(current) == 0) {
@@ -2820,6 +2833,31 @@ ArrayHeader* ArenaContainer::PlaceArray(const TypeInfo* type_info, uint32_t coun
   return result;
 }
 
+
+void GC_StackWalk(object_callback_t callback, void* argument) {
+  FrameOverlay* frame = currentFrame;
+  while (frame != nullptr) {
+    ObjHeader** current = reinterpret_cast<ObjHeader**>(frame + 1) + frame->parameters;
+    ObjHeader** end = current + frame->count - kFrameOverlaySlots - frame->parameters;
+    while (current < end) {
+      ObjHeader* obj = *current++;
+      if (obj != nullptr) {
+        callback(argument, obj);
+      }
+    }
+    frame = frame->previous;
+  }
+}
+
+void GC_AtomicRootsWalk(object_callback_t callback, void* argument) {
+  lock(&g_leakCheckerGlobalLock);
+  auto* candidate = g_leakCheckerGlobalList;
+  while (candidate != nullptr) {
+    callback(argument, candidate);
+    candidate = candidate->meta_object()->LeakDetector.next_;
+  }
+  unlock(&g_leakCheckerGlobalLock);
+}
 
 // API of the memory manager.
 extern "C" {
@@ -3158,6 +3196,28 @@ KRef* LookupTLS(void** key, int index) {
   state->tlsMapLastKey = key;
   state->tlsMapLastStart = start;
   return start + index;
+}
+
+
+void GC_RegisterWorker(void* worker) {
+  cyclicAddWorker(worker);
+}
+
+void GC_UnregisterWorker(void* worker) {
+  cyclicRemoveWorker(worker);
+}
+
+void GC_RendezvouzCallback(void* worker) {
+  if (g_hasCyclicCollector)
+    cyclicRendezvouz(worker);
+}
+
+KBoolean Kotlin_native_internal_GC_getCyclicCollector() {
+  return g_hasCyclicCollector;
+}
+
+void Kotlin_native_internal_GC_setCyclicCollector(KBoolean value) {
+  g_hasCyclicCollector = value;
 }
 
 } // extern "C"
