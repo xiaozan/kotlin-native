@@ -165,39 +165,8 @@ abstract class OldKonanTest extends JavaExec {
         return sourceFiles
     }
 
-    // TODO refactor
     List<String> buildCompileList() {
-        def result = []
-        def filePattern = ~/(?m)\/\/\s*FILE:\s*(.*)$/
-        def srcFile = project.file(source)
-        def srcText = removeDiagnostics(srcFile.text)
-        def matcher = filePattern.matcher(srcText)
-
-        if (srcText.contains('// WITH_COROUTINES')) {
-            def coroutineHelpersFileName = "$outputDirectory/helpers.kt"
-            createFile(coroutineHelpersFileName, CoroutineTestUtilKt.createTextForHelpers(true))
-            result.add(coroutineHelpersFileName)
-        }
-
-        if (!matcher.find()) {
-            // There is only one file in the input
-            def filePath = "$outputDirectory/${srcFile.name}"
-            registerKtFile(result, filePath, srcText)
-        } else {
-            // There are several files
-            def processedChars = 0
-            while (true) {
-                def filePath = "$outputDirectory/${matcher.group(1)}"
-                def start = processedChars
-                def nextFileExists = matcher.find()
-                def end = nextFileExists ? matcher.start() : srcText.length()
-                def fileText = srcText.substring(start, end)
-                processedChars = end
-                registerKtFile(result, filePath, fileText)
-                if (!nextFileExists) break
-            }
-        }
-        return result
+        return TestDirectivesKt.buildCompileList(project, source, outputDirectory)
     }
 
     void createFile(String file, String text) {
