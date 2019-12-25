@@ -83,7 +83,7 @@ internal class ModuleMetadataEmitter(
                     typeParametersInterner = Interner(data.typeParametersInterner)
             )
             val children = element.children + if (element is ClassStub.Companion) {
-                listOf(ConstructorStub(isPrimary = true, visibility = VisibilityModifier.PRIVATE, origin = StubOrigin.SyntheticDefaultConstructor))
+                listOf(ConstructorStub(isPrimary = true, visibility = VisibilityModifier.PRIVATE, origin = StubOrigin.Synthetic.DefaultConstructor))
             } else emptyList()
             val elements = KmElements(children.map { it.accept(this, classVisitingContext) })
             val kmClass = with (MappingExtensions(data.typeParametersInterner)) {
@@ -100,11 +100,30 @@ internal class ModuleMetadataEmitter(
                     km.constructors += elements.constructors.toList()
                     km.companionObject = element.companion?.nestedName()
                     km.uniqId = data.uniqIds.uniqIdForClass(element)
+                    if (element is ClassStub.Enum) {
+                        element.entries.mapTo(km.klibEnumEntries) { mapEnumEntry(it, classVisitingContext) }
+                    }
                 }
             }
             // Metadata stores classes as flat list.
             return listOf(kmClass) + elements.classes
         }
+
+        private fun mapEnumEntry(enumEntry: EnumEntryStub, data: VisitingContext): KlibEnumEntry =
+                with (MappingExtensions(data.typeParametersInterner)) {
+                    KlibEnumEntry(
+                            name = enumEntry.name,
+                            uniqId = data.uniqIds.uniqIdForEnumEntry(enumEntry, data.container as ClassStub.Enum),
+                            ordinal = enumEntry.ordinal,
+                            annotations = mutableListOf(
+                                    KmAnnotation(
+                                            enumEntry.constant.determineEnumEntryClassifier().fqNameSerialized,
+                                            mapOf("value" to enumEntry.constant.mapToAnnotationArgument())
+                                    )
+                            )
+                    )
+                }
+
 
         override fun visitTypealias(element: TypealiasStub, data: VisitingContext): KmTypeAlias =
                 with (MappingExtensions(data.typeParametersInterner)) {
@@ -190,19 +209,20 @@ private class MappingExtensions(
                 Flag.IS_PRIVATE.takeIf { this == VisibilityModifier.PRIVATE }
         )
 
-    private val MemberStubModality.flags: Flags
+    private val InheritanceModifier.flags: Flags
         get() = flagsOfNotNull(
-                Flag.IS_FINAL.takeIf { this == MemberStubModality.FINAL },
-                Flag.IS_OPEN.takeIf { this == MemberStubModality.OPEN },
-                Flag.IS_ABSTRACT.takeIf { this == MemberStubModality.ABSTRACT }
+                Flag.IS_FINAL.takeIf { this == InheritanceModifier.FINAL },
+                Flag.IS_OPEN.takeIf { this == InheritanceModifier.OPEN },
+                Flag.IS_ABSTRACT.takeIf { this == InheritanceModifier.ABSTRACT }
         )
 
     val FunctionStub.flags: Flags
         get() = flagsOfNotNull(
                 Flag.IS_PUBLIC,
-                Flag.Function.IS_EXTERNAL,
+                Flag.Function.IS_EXTERNAL.takeIf { this.external },
+                Flag.Function.IS_DECLARATION.takeIf { !this.external },
                 Flag.HAS_ANNOTATIONS.takeIf { annotations.isNotEmpty() }
-        ) or modality.flags
+        ) or modifier.flags
 
     val Classifier.fqNameSerialized: String
         get() = buildString {
@@ -234,7 +254,7 @@ private class MappingExtensions(
                     is PropertyStub.Kind.Val -> null
                     is PropertyStub.Kind.Var -> Flag.Property.HAS_SETTER
                 }
-        ) or modality.flags
+        ) or modifier.flags
 
     val PropertyStub.getterFlags: Flags
         get() = when (kind) {
@@ -360,6 +380,12 @@ private class MappingExtensions(
                     ("replaceWith" to replaceWith(replaceWith)),
                     ("level" to deprecationLevel(DeprecationLevel.ERROR))
             )
+            is AnnotationStub.CEnumEntryAlias -> mapOfNotNull(
+                    ("entryName" to entryName).asAnnotationArgument()
+            )
+            is AnnotationStub.CEnumVarTypeSize -> mapOfNotNull(
+                    ("size" to KmAnnotationArgument.IntValue(size))
+            )
         }
         return KmAnnotation(classifier.fqNameSerialized, args)
     }
@@ -478,4 +504,12 @@ private class MappingExtensions(
 
     private val TypeParameterStub.id: Int
         get() = typeParametersInterner.intern(this)
+
+    fun IntegralConstantStub.determineEnumEntryClassifier(): Classifier = when (size) {
+        1 -> if (isSigned) "Byte" else "UByte"
+        2 -> if (isSigned) "Short" else "UShort"
+        4 -> if (isSigned) "Int" else "UInt"
+        8 -> if (isSigned) "Long" else "ULong"
+        else -> error("Integral constant with unexpected size of ${size}.")
+    }.let { Classifier.topLevel(cinteropInternalPackage, "CEnumEntryValue").nested(it) }
 }

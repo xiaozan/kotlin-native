@@ -103,9 +103,7 @@ private fun KotlinTypeArgument.toStubIrType(): TypeArgument = when (this) {
  * that ByteVar is a typealias to ByteVarOf<Byte>.
  */
 private object PredefinedTypesHandler {
-    private const val cInteropPackage = "kotlinx.cinterop"
-
-    private val nativePtrClassifier = Classifier.topLevel(cInteropPackage, "NativePtr")
+    private val nativePtrClassifier = Classifier.topLevel(cinteropPackage, "NativePtr")
 
     private val primitives = setOf(
             KotlinTypes.boolean,
@@ -121,7 +119,7 @@ private object PredefinedTypesHandler {
     private val primitiveVarClassifierToPrimitiveType: Map<Classifier, KotlinClassifierType> =
             primitives.associateBy {
                 val typeVar = "${it.classifier.topLevelName}Var"
-                Classifier.topLevel(cInteropPackage, typeVar)
+                Classifier.topLevel(cinteropPackage, typeVar)
             }
 
     /**
@@ -130,7 +128,7 @@ private object PredefinedTypesHandler {
      */
     private fun getVarOfTypeFor(primitiveType: KotlinClassifierType, nullable: Boolean): ClassifierStubType {
         val typeVarOf = "${primitiveType.classifier.topLevelName}VarOf"
-        val classifier = Classifier.topLevel(cInteropPackage, typeVarOf)
+        val classifier = Classifier.topLevel(cinteropPackage, typeVarOf)
         return ClassifierStubType(classifier, listOf(TypeArgumentStub(primitiveType.toStubIrType())), nullable = nullable)
     }
 

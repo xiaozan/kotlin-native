@@ -376,7 +376,8 @@ internal class RTTIGenerator(override val context: Context) : ContextUtils {
                     else {
                         val vtableEntries = iface.interfaceTableEntries.map { ifaceFunction ->
                             val impl = OverriddenFunctionInfo(
-                                    methodTableEntries.first { ifaceFunction in it.function.allOverriddenFunctions }.function,
+                                    methodTableEntries.firstOrNull { ifaceFunction in it.function.allOverriddenFunctions }?.function
+                                            ?: error("$className: no entry with ${ifaceFunction.name}"),
                                     ifaceFunction
                             ).implementation
                             if (impl == null || context.referencedFunctions?.contains(impl) == false)

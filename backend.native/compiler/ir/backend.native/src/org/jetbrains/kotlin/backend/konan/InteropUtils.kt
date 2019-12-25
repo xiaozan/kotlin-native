@@ -36,6 +36,10 @@ internal class InteropBuiltIns(builtIns: KonanBuiltIns) {
     val cValues = this.packageScope.getContributedClass("CValues")
     val cValue = this.packageScope.getContributedClass("CValue")
     val cOpaque = this.packageScope.getContributedClass("COpaque")
+    val cEnum = this.packageScope.getContributedClass("CEnum")
+    val cEnumVar = this.packageScope.getContributedClass("CEnumVar")
+    val cPrimitiveVar = this.packageScope.getContributedClass("CPrimitiveVar")
+    val cPrimitiveVarType = cPrimitiveVar.defaultType.memberScope.getContributedClass("Type")
     val cValueWrite = this.packageScope.getContributedFunctions("write")
             .single { it.extensionReceiverParameter?.type?.constructor?.declarationDescriptor == cValue }
     val cValueRead = this.packageScope.getContributedFunctions("readValue")
@@ -85,6 +89,7 @@ internal class InteropBuiltIns(builtIns: KonanBuiltIns) {
 
     val interpretObjCPointerOrNull = packageScope.getContributedFunctions("interpretObjCPointerOrNull").single()
     val interpretObjCPointer = packageScope.getContributedFunctions("interpretObjCPointer").single()
+    val interpretNullablePointed = packageScope.getContributedFunctions("interpretNullablePointed").single()
 
     val objCObjectSuperInitCheck = packageScope.getContributedFunctions("superInitCheck").single()
     val objCObjectInitBy = packageScope.getContributedFunctions("initBy").single()
