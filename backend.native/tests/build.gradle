@@ -415,8 +415,8 @@ task run_external () {
     createTestTasks(externalTestsDir, RunExternalTestGroup) { }
 
     // Set up dependencies.
-    dependsOn(tasksOf(RunExternalTestGroup.class))
-    dependsOn(tasksOf(KonanGTest.class))
+    dependsOn(tasksOf(RunExternalTestGroup.class) { true })
+    dependsOn(tasksOf(KonanGTest.class) { true })
 }
 
 task daily() {
