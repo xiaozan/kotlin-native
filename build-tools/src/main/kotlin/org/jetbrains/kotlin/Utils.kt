@@ -8,15 +8,13 @@ package org.jetbrains.kotlin
 import org.gradle.api.Project
 import org.gradle.api.Task
 import org.jetbrains.kotlin.konan.target.*
-import java.io.FileInputStream
-import java.io.IOException
+import org.jetbrains.report.json.*
 import java.io.File
-import java.util.concurrent.TimeUnit
 import java.net.HttpURLConnection
 import java.net.URL
-import java.util.Base64
-import org.jetbrains.report.json.*
 import java.nio.file.Path
+import java.util.*
+import java.util.concurrent.TimeUnit
 
 //region Project properties.
 
@@ -103,7 +101,7 @@ fun Task.dependsOnDist() {
         val target = project.testTarget
         if (target != HostManager.host) {
             // if a test_target property is set then tests should depend on a crossDist
-            // otherwise runtime components would not be build for a target.
+            // otherwise, runtime components would not be build for a target.
             dependsOn(rootTasks.getByName("${target.name}CrossDist"))
         }
     }
@@ -191,7 +189,7 @@ fun getBuild(buildLocator: String, user: String, password: String) =
 fun sendGetRequest(url: String, username: String? = null, password: String? = null) : String {
     val connection = URL(url).openConnection() as HttpURLConnection
     if (username != null && password != null) {
-        val auth = Base64.getEncoder().encode((username + ":" + password).toByteArray()).toString(Charsets.UTF_8)
+        val auth = Base64.getEncoder().encode(("$username:$password").toByteArray()).toString(Charsets.UTF_8)
         connection.addRequestProperty("Authorization", "Basic $auth")
     }
     connection.setRequestProperty("Accept", "application/json");
@@ -238,8 +236,8 @@ fun compileSwift(project: Project, target: KonanTarget, sources: List<String>, o
         |stdout: $stdOut
         |stderr: $stdErr
         """.trimMargin())
-    check(exitCode == 0, { "Compilation failed" })
-    check(output.toFile().exists(), { "Compiler swiftc hasn't produced an output file: $output" })
+    check(exitCode == 0) { "Compilation failed" }
+    check(output.toFile().exists()) { "Compiler swiftc hasn't produced an output file: $output" }
 }
 
 fun targetSupportsMimallocAllocator(targetName: String) =
