@@ -39,6 +39,9 @@ val Project.testOutputStdlib
 val Project.testOutputFramework
     get() = (findProperty("testOutputFramework") as File).toString()
 
+val Project.testOutputExternal
+    get() = (findProperty("testOutputExternal") as File).toString()
+
 val Project.kotlinNativeDist
     get() = this.rootProject.file(this.findProperty("org.jetbrains.kotlin.native.home")
             ?: this.findProperty("konan.home") ?: "dist")

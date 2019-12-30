@@ -21,23 +21,15 @@ import org.gradle.api.tasks.JavaExec
 import org.gradle.api.tasks.TaskAction
 import org.gradle.process.ExecResult
 
-import javax.inject.Inject
 import java.nio.file.Paths
 import java.util.function.Function
 import java.util.regex.Pattern
 
-abstract class OldKonanTest extends JavaExec {
-    public boolean inDevelopersRun = false
-
+class RunExternalTestGroup extends JavaExec {
     public String source
     def platformManager = project.rootProject.platformManager
     def target = platformManager.targetManager(project.testTarget).target
-    def dist = project.rootProject.file(project.findProperty("org.jetbrains.kotlin.native.home") ?:
-            project.findProperty("konan.home") ?: "dist")
-    def dependenciesDir = project.rootProject.dependenciesDir
-    def konancDriver = project.isWindows() ? "konanc.bat" : "konanc"
-    def konanc = new File("${dist.canonicalPath}/bin/$konancDriver").absolutePath
-    def outputSourceSetName = "testOutputLocal"
+    def dist = UtilsKt.getKotlinNativeDist(project)
     def enableKonanAssertions = true
     String outputDirectory = null
     String goldValue = null
@@ -52,44 +44,22 @@ abstract class OldKonanTest extends JavaExec {
     boolean multiRuns = false
     List<List<String>> multiArguments = null
 
-    boolean enabled = true
     boolean expectedFail = false
-    boolean run = true
     boolean compilerMessages = false
 
-    void setDisabled(boolean value) {
-        this.enabled = !value
-    }
-
-    void setExpectedFail(boolean value) {
-        this.expectedFail = value
-    }
-
-    // Uses directory defined in $outputSourceSetName source set.
-    // If such source set doesn't exist, uses temporary directory.
+    // Uses directory defined in $outputSourceSetName source set
     void createOutputDirectory() {
         if (outputDirectory != null) {
             return
         }
-        def outputSourceSet = project.findProperty(getOutputSourceSetName())
-        if (outputSourceSet != null) {
-            outputDirectory = outputSourceSet.absolutePath + "/$name"
-            project.file(outputDirectory).mkdirs()
-        } else {
-            outputDirectory = getTemporaryDir().absolutePath
-        }
+        def outputSourceSet = UtilsKt.getTestOutputExternal(project)
+        outputDirectory = Paths.get(outputSourceSet, name).toString()
+        project.file(outputDirectory).mkdirs()
     }
 
-    OldKonanTest() {
+    RunExternalTestGroup() {
         // We don't build the compiler if a custom dist path is specified.
-        if (!project.ext.useCustomDist) {
-            dependsOn(project.rootProject.tasks['dist'])
-            if (project.testTarget) {
-                // if a test_target property is set then tests should depend on a crossDist
-                // otherwise runtime components would not be build for a target
-                dependsOn(project.rootProject.tasks["${target}CrossDist"])
-            }
-        }
+        UtilsKt.dependsOnDist(this)
     }
 
     @Override
@@ -98,8 +68,6 @@ abstract class OldKonanTest extends JavaExec {
         // compilation begins on runCompiler call, to emulate this behaviour we call super.exec() after
         // configuration part at runCompiler.
     }
-
-    abstract void compileTest(List<String> filesToCompile, String exe)
 
     protected void runCompiler(List<String> filesToCompile, String output, List<String> moreArgs) {
         def log = new ByteArrayOutputStream()
@@ -144,30 +112,7 @@ abstract class OldKonanTest extends JavaExec {
         }
     }
 
-    protected void runCompiler(String source, String output, List<String> moreArgs) {
-        runCompiler([source], output, moreArgs)
-    }
-
-    String buildExePath() {
-        def exeName = project.file(source).name.replace(".kt", "")
-        return "$outputDirectory/$exeName"
-    }
-
-    protected String removeDiagnostics(String str) {
-        return str.replaceAll(~/<!.*?!>(.*?)<!>/) { all, text -> text }
-    }
-
-    protected List<String> registerKtFile(List<String> sourceFiles, String newFilePath, String newFileContent) {
-        createFile(newFilePath, newFileContent)
-        if (newFilePath.endsWith(".kt")) {
-            sourceFiles.add(newFilePath)
-        }
-        return sourceFiles
-    }
-
-    List<String> buildCompileList() {
-        return TestDirectivesKt.buildCompileList(project, source, outputDirectory)
-    }
+    String executablePath = "$outputDirectory/program.tr"
 
     void createFile(String file, String text) {
         Paths.get(file).with {
@@ -181,23 +126,17 @@ abstract class OldKonanTest extends JavaExec {
     OutputStream out
 
     @TaskAction
-    void executeTest() {
+    void runExecutable() {
         if (!enabled) {
             println "Test is disabled: $name"
             return
         }
 
         createOutputDirectory()
-        def program = buildExePath()
+        def program = executablePath
         def suffix = target.family.exeSuffix
         def exe = "$program.$suffix"
 
-        compileTest(buildCompileList(), program)
-
-        if (!run) {
-            println "to be executed manually: $exe"
-            return
-        }
         println "execution: $exe"
 
         def compilerMessagesText = compilerMessages ? project.file("${program}.compilation.log").getText('UTF-8') : ""
@@ -259,13 +198,6 @@ abstract class OldKonanTest extends JavaExec {
 
         if (!exitCodeMismatch && !goldValueMismatch && this.expectedFail) println("Unexpected pass")
     }
-}
-
-class RunExternalTestGroup extends OldKonanTest {
-    /**
-     * overrides [KonanTest::inDevelopersRun] used in [:backend.native:tests:sanity]
-     */
-    public def inDevelopersRun = false
 
     /**
      * If true, the test executable will be built in two stages:
@@ -279,15 +211,6 @@ class RunExternalTestGroup extends OldKonanTest {
     def outputSourceSetName = "testOutputExternal"
     String filter = project.findProperty("filter")
     def testGroupReporter = new KonanTestGroupReportEnvironment(project)
-
-    RunExternalTestGroup() {
-    }
-
-    @Override
-    List<String> buildCompileList() {
-        // Already build by the previous step
-        return null
-    }
 
     void parseLanguageFlags() {
         def text = project.file(source).text
@@ -321,7 +244,7 @@ class RunExternalTestGroup extends OldKonanTest {
         return result.join(System.lineSeparator())
     }
 
-    String insertInTextAfter(String text, String insert, String after) {
+    static String insertInTextAfter(String text, String insert, String after) {
         def begin = text.indexOf(after)
         if (begin != -1) {
             def end = text.indexOf("\n", begin)
@@ -345,8 +268,8 @@ class RunExternalTestGroup extends OldKonanTest {
         def packages = new LinkedHashSet<String>()
         def imports = []
 
-        def result = super.buildCompileList()
-        for (String filePath : result) {
+        def filesToCompile = TestDirectivesKt.buildCompileList(project, source, outputDirectory)
+        for (String filePath : filesToCompile) {
             def text = project.file(filePath).text
             if (text.contains('COROUTINES_PACKAGE')) {
                 text = text.replace('COROUTINES_PACKAGE', 'kotlin.coroutines')
@@ -373,7 +296,7 @@ class RunExternalTestGroup extends OldKonanTest {
             createFile(filePath, text)
         }
         // TODO: optimize files writes
-        for (String filePath : result) {
+        for (String filePath : filesToCompile) {
             def text = project.file(filePath).text
             // Find if there are any imports in the file
             def matcher = (text =~ ~/${importRegex}(${fullQualified}*)/)
@@ -411,7 +334,7 @@ class RunExternalTestGroup extends OldKonanTest {
                 text = insertInTextAfter(text, (pkg ? "\n$pkg\n" : "") + "import $sourceName.*\n", "@file:Suppress")
             }
             // now replace all package usages in full qualified names
-            def res = ""                      // result
+            def res = ""                      // filesToCompile
             def vars = new HashSet<String>()  // variables that has the same name as a package
             text.eachLine { line ->
                 packages.each { pkg ->
@@ -437,8 +360,8 @@ class RunExternalTestGroup extends OldKonanTest {
             createFile(filePath, res)
         }
         createLauncherFile("$outputDirectory/_launcher.kt", imports)
-        result.add("$outputDirectory/_launcher.kt")
-        return result
+        filesToCompile.add("$outputDirectory/_launcher.kt")
+        return filesToCompile
     }
 
     String normalize(String name) {
@@ -531,25 +454,7 @@ fun runTest() {
         }
     }
 
-    @Override
-    void compileTest(List<String> filesToCompile, String exe) {
-        // An executable should be already compiled
-    }
-
-    @Override
-    String buildExePath() {
-        def outputDir
-        def outputSourceSet = project.findProperty(getOutputSourceSetName())
-        if (outputSourceSet != null) {
-            outputDir  = outputSourceSet.absolutePath+ "/$name"
-        } else {
-            outputDir = getTemporaryDir().absolutePath
-        }
-        return "$outputDir/program.tr"
-    }
-
     @TaskAction
-    @Override
     void executeTest() {
         createOutputDirectory()
         def outputRootDirectory = outputDirectory
@@ -583,15 +488,14 @@ fun runTest() {
             compileList.add(project.file("testUtils.kt").absolutePath)
             compileList.add(project.file("helpers.kt").absolutePath)
             try {
-                def exePath = buildExePath()
                 if (enableTwoStageCompilation) {
                     // Two-stage compilation.
-                    def klibPath = "${exePath}.klib"
+                    def klibPath = "${executablePath}.klib"
                     runCompiler(compileList, klibPath, flags + ["-p", "library"])
-                    runCompiler([], exePath, flags + ["-Xinclude=$klibPath"])
+                    runCompiler([], executablePath, flags + ["-Xinclude=$klibPath"])
                 } else {
                     // Regular compilation.
-                    runCompiler(compileList, exePath, flags)
+                    runCompiler(compileList, executablePath, flags)
                 }
             } catch (Exception ex) {
                 project.logger.quiet("ERROR: Compilation failed for test suite: $name with exception", ex)
@@ -602,7 +506,6 @@ fun runTest() {
             }
 
             // Run the tests.
-            def currentResult = null
             outputDirectory = outputRootDirectory
             arguments = (arguments ?: []) + "--ktest_logger=SILENT"
             ktFiles.each { file ->
@@ -610,12 +513,15 @@ fun runTest() {
                 def savedArgs = arguments
                 arguments += "--ktest_filter=_${normalize(file.name)}.*"
                 use(KonanTestSuiteReportKt) {
-                    project.logger.quiet("TEST: $file.name (done: $testGroupReporter.statistics.total/${ktFiles.size()}, passed: $testGroupReporter.statistics.passed, skipped: $testGroupReporter.statistics.skipped)")
+                    project.logger.quiet("TEST: $file.name " +
+                            "(done: $testGroupReporter.statistics.total/${ktFiles.size()}, " +
+                            "passed: $testGroupReporter.statistics.passed, " +
+                            "skipped: $testGroupReporter.statistics.skipped)")
                 }
                 if (isEnabledForNativeBackend(source)) {
                     suite.executeTest(file.name) {
                        project.logger.quiet(source)
-                       super.executeTest()
+                       runExecutable()
                     }
                 } else {
                     suite.skipTest(file.name)
