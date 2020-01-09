@@ -293,7 +293,7 @@ boolean isExcluded(String dir) {
     return result
 }
 
-def createTestTasks(File testRoot, Class<Task> taskType, Closure taskConfiguration) {
+def createTestTasks(File testRoot, Class<Task> taskType) {
     testRoot.eachDirRecurse {
         // Skip build directory and directories without *.kt files.
         if (it.name == "build" || it.listFiles().count { it.name.endsWith(".kt") && it.isFile() } == 0) {
@@ -303,12 +303,10 @@ def createTestTasks(File testRoot, Class<Task> taskType, Closure taskConfigurati
         def taskDirectory = project.relativePath(it)
         if (!isExcluded(taskDirectory)) {
             def taskName = taskDirectory.replaceAll("[-/\\\\]", '_')
-
-            def task = project.task(taskName, type: taskType) {
+            project.tasks.register(taskName, taskType) {
                 groupDirectory = taskDirectory
                 finalizedBy resultsTask
             }
-            taskConfiguration(task)
         } else {
             println("$taskDirectory is excluded")
         }
@@ -412,7 +410,7 @@ task run_external () {
     }
 
     // Create tasks for external tests.
-    createTestTasks(externalTestsDir, RunExternalTestGroup) { }
+    createTestTasks(externalTestsDir, RunExternalTestGroup)
 
     // Set up dependencies.
     dependsOn(tasksOf(RunExternalTestGroup.class) { true })
