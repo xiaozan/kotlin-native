@@ -16,8 +16,8 @@
 
 package org.jetbrains.kotlin
 
+import org.gradle.api.DefaultTask
 import org.gradle.api.tasks.Input
-import org.gradle.api.tasks.JavaExec
 import org.gradle.api.tasks.TaskAction
 import org.gradle.process.ExecResult
 
@@ -25,7 +25,7 @@ import java.nio.file.Paths
 import java.util.function.Function
 import java.util.regex.Pattern
 
-class RunExternalTestGroup extends JavaExec {
+class RunExternalTestGroup extends DefaultTask {
     public String source
     def platformManager = project.rootProject.platformManager
     def target = platformManager.targetManager(project.testTarget).target
@@ -60,13 +60,6 @@ class RunExternalTestGroup extends JavaExec {
     RunExternalTestGroup() {
         // We don't build the compiler if a custom dist path is specified.
         UtilsKt.dependsOnDist(this)
-    }
-
-    @Override
-    void exec() {
-        // Perhaps later we will return this exec() back but for now rest of infrastructure expects
-        // compilation begins on runCompiler call, to emulate this behaviour we call super.exec() after
-        // configuration part at runCompiler.
     }
 
     protected void runCompiler(List<String> filesToCompile, String output, List<String> moreArgs) {
