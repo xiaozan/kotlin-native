@@ -105,7 +105,7 @@ class RunExternalTestGroup extends DefaultTask {
         }
     }
 
-    String executablePath = "$outputDirectory/program.tr"
+    String executablePath() { return "$outputDirectory/program.tr" }
 
     void createFile(String file, String text) {
         Paths.get(file).with {
@@ -118,15 +118,12 @@ class RunExternalTestGroup extends DefaultTask {
 
     OutputStream out
 
-    @TaskAction
     void runExecutable() {
         if (!enabled) {
             println "Test is disabled: $name"
             return
         }
-
-        createOutputDirectory()
-        def program = executablePath
+        def program = executablePath()
         def suffix = target.family.exeSuffix
         def exe = "$program.$suffix"
 
@@ -483,12 +480,12 @@ fun runTest() {
             try {
                 if (enableTwoStageCompilation) {
                     // Two-stage compilation.
-                    def klibPath = "${executablePath}.klib"
+                    def klibPath = "${executablePath()}.klib"
                     runCompiler(compileList, klibPath, flags + ["-p", "library"])
-                    runCompiler([], executablePath, flags + ["-Xinclude=$klibPath"])
+                    runCompiler([], executablePath(), flags + ["-Xinclude=$klibPath"])
                 } else {
                     // Regular compilation.
-                    runCompiler(compileList, executablePath, flags)
+                    runCompiler(compileList, executablePath(), flags)
                 }
             } catch (Exception ex) {
                 project.logger.quiet("ERROR: Compilation failed for test suite: $name with exception", ex)
