@@ -273,15 +273,21 @@ fun <T> IrConstructorCall.getAnnotationValueOrNull(name: String): T? {
 }
 
 fun IrFunction.externalSymbolOrThrow(): String? {
+
+    val supportedAnnotations = listOf(
+            RuntimeNames.symbolNameAnnotation,
+            KonanFqNames.objCMethod,
+            KonanFqNames.typedIntrinsic,
+            RuntimeNames.cCall,
+            RuntimeNames.memberAt
+    )
+
     annotations.findAnnotation(RuntimeNames.symbolNameAnnotation)?.let { return it.getAnnotationStringValue() }
 
-    if (annotations.hasAnnotation(KonanFqNames.objCMethod)) return null
+    if (supportedAnnotations.any(annotations::hasAnnotation)) return null
 
-    if (annotations.hasAnnotation(KonanFqNames.typedIntrinsic)) return null
-
-    if (annotations.hasAnnotation(RuntimeNames.cCall)) return null
-
-    throw Error("external function ${this.longName} must have @TypedIntrinsic, @SymbolName or @ObjCMethod annotation")
+    val supportedAnnotationsShortNames = supportedAnnotations.joinToString { "@${it.shortName()}" }
+    throw Error("external function ${this.longName} must have one of the following annotations: $supportedAnnotationsShortNames")
 }
 
 val IrFunction.isBuiltInOperator get() = origin == IrBuiltIns.BUILTIN_OPERATOR

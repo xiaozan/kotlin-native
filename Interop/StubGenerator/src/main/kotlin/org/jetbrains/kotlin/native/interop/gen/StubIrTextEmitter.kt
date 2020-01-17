@@ -499,6 +499,8 @@ class StubIrTextEmitter(
                     "DeprecationLevel.ERROR)"
         is AnnotationStub.CEnumEntryAlias -> error("CEnumEntryAlias annotation in textual mode is unsupported")
         is AnnotationStub.CEnumVarTypeSize -> error("CEnumVarTypeSize annotation in textual mode is unsupported")
+        is AnnotationStub.CStruct.MemberAt -> error("")
+        is AnnotationStub.CStruct.VarType -> error("")
     }
 
     private fun renderEnumEntry(enumEntryStub: EnumEntryStub): String =

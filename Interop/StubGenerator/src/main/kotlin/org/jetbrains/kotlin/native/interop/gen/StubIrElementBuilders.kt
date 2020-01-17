@@ -97,7 +97,11 @@ internal class StructStubBuilder(
                         )
                         PropertyStub(field.name, fieldRefType.argType.toStubIrType(), kind, origin = origin)
                     } else {
-                        val kind = PropertyStub.Kind.Val(PropertyAccessor.Getter.MemberAt(offset, hasValueAccessor = false))
+                        val accessor = when (context.generationMode) {
+                            GenerationMode.SOURCE_CODE -> PropertyAccessor.Getter.MemberAt(offset, hasValueAccessor = false)
+                            GenerationMode.METADATA -> PropertyAccessor.Getter.ExternalGetter(listOf(AnnotationStub.CStruct.MemberAt(offset)))
+                        }
+                        val kind = PropertyStub.Kind.Val(accessor)
                         PropertyStub(field.name, pointedType, kind, origin = origin)
                     }
                 }
@@ -135,7 +139,10 @@ internal class StructStubBuilder(
         val typeSize = listOf(IntegralConstantStub(def.size, 4, true), IntegralConstantStub(def.align.toLong(), 4, true))
         val companionSuperInit = SuperClassInit(companionSuper, typeSize)
         val companionClassifier = classifier.nested("Companion")
-        val companion = ClassStub.Companion(companionClassifier, emptyList(), companionSuperInit)
+        val annotation = AnnotationStub.CStruct.VarType(def.size, def.align).takeIf {
+            context.generationMode == GenerationMode.METADATA
+        }
+        val companion = ClassStub.Companion(companionClassifier,  superClassInit = companionSuperInit, annotations = listOfNotNull(annotation))
 
         return listOf(ClassStub.Simple(
                 classifier,

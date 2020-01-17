@@ -12,6 +12,7 @@ import org.jetbrains.kotlin.ir.descriptors.IrBuiltIns
 import org.jetbrains.kotlin.ir.symbols.IrSymbol
 import org.jetbrains.kotlin.ir.util.*
 import org.jetbrains.kotlin.resolve.descriptorUtil.getAllSuperClassifiers
+import org.jetbrains.kotlin.resolve.descriptorUtil.getSuperClassNotAny
 import org.jetbrains.kotlin.resolve.descriptorUtil.parentsWithSelf
 import org.jetbrains.kotlin.types.KotlinType
 
@@ -76,6 +77,9 @@ internal interface DescriptorToIrTranslationMixin {
                         it.toIrType()
                     }
                     irClass.createParameterDeclarations()
+                    descriptor.annotations.mapTo(irClass.annotations) {
+                        typeTranslator.constantValueGenerator.generateAnnotationConstructorCall(it)!!
+                    }
                     builder(irClass)
                     createFakeOverrides(descriptor).forEach(irClass::addMember)
                 }
@@ -140,6 +144,9 @@ internal interface DescriptorToIrTranslationMixin {
             irFunction.dispatchReceiverParameter = functionDescriptor.dispatchReceiverParameter?.let {
                 symbolTable.declareValueParameter(SYNTHETIC_OFFSET, SYNTHETIC_OFFSET, IrDeclarationOrigin.DEFINED, it, it.type.toIrType())
             }
+            functionDescriptor.annotations.mapTo(irFunction.annotations) {
+                typeTranslator.constantValueGenerator.generateAnnotationConstructorCall(it)!!
+            }
         }
         return irFunction
     }
@@ -157,3 +164,16 @@ internal fun IrSymbol.findCEnumDescriptor(interopBuiltIns: InteropBuiltIns): Cla
         descriptor.parentsWithSelf
                 .filterIsInstance<ClassDescriptor>()
                 .firstOrNull { it.implementsCEnum(interopBuiltIns) }
+
+private fun ClassDescriptor.implementsCStruct(interopBuiltIns: InteropBuiltIns): Boolean =
+        interopBuiltIns.cStructVar in this.getAllSuperClassifiers()
+
+/**
+ * All enums that come from interop library implement CEnum interface.
+ * This function checks that given symbol located in subtree of
+ * CEnum inheritor.
+ */
+internal fun IrSymbol.findCStructDescriptor(interopBuiltIns: InteropBuiltIns): ClassDescriptor? =
+        descriptor.parentsWithSelf
+                .filterIsInstance<ClassDescriptor>()
+                .firstOrNull { it.implementsCStruct(interopBuiltIns) }

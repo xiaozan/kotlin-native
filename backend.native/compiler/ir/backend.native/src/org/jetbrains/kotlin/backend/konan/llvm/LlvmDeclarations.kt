@@ -338,6 +338,7 @@ private class DeclarationsGeneratorVisitor(override val context: Context) :
 
         val llvmFunction = if (declaration.isExternal) {
             if (declaration.isTypedIntrinsic || declaration.isObjCBridgeBased()
+                    || declaration.annotations.hasAnnotation(RuntimeNames.memberAt)
                     || declaration.annotations.hasAnnotation(RuntimeNames.cCall)) return
 
             context.llvm.externalFunction(declaration.symbolName, llvmFunctionType,

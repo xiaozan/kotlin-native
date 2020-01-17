@@ -8,9 +8,11 @@ import org.jetbrains.kotlin.backend.common.serialization.DescriptorTable
 import org.jetbrains.kotlin.backend.common.serialization.metadata.KlibMetadataMonolithicSerializer
 import org.jetbrains.kotlin.backend.konan.descriptors.isForwardDeclarationModule
 import org.jetbrains.kotlin.backend.konan.descriptors.konanLibrary
-import org.jetbrains.kotlin.backend.konan.ir.interop.IrProviderForInteropStubs
 import org.jetbrains.kotlin.backend.konan.ir.KonanSymbols
+import org.jetbrains.kotlin.backend.konan.ir.interop.*
 import org.jetbrains.kotlin.backend.konan.ir.interop.IrProviderForCEnumStubs
+import org.jetbrains.kotlin.backend.konan.ir.interop.IrProviderForCStructStubs
+import org.jetbrains.kotlin.backend.konan.ir.interop.IrProviderForInteropStubs
 import org.jetbrains.kotlin.backend.konan.ir.interop.findCEnumDescriptor
 import org.jetbrains.kotlin.backend.konan.llvm.*
 import org.jetbrains.kotlin.backend.konan.lower.ExpectToActualDefaultValueCopier
@@ -19,9 +21,11 @@ import org.jetbrains.kotlin.backend.konan.serialization.*
 import org.jetbrains.kotlin.cli.common.messages.AnalyzerWithCompilerReport
 import org.jetbrains.kotlin.config.CommonConfigurationKeys
 import org.jetbrains.kotlin.config.languageVersionSettings
+import org.jetbrains.kotlin.descriptors.ClassDescriptor
 import org.jetbrains.kotlin.descriptors.DeclarationDescriptor
 import org.jetbrains.kotlin.descriptors.ModuleDescriptor
 import org.jetbrains.kotlin.descriptors.konan.isKonanStdlib
+import org.jetbrains.kotlin.incremental.components.NoLookupLocation
 import org.jetbrains.kotlin.ir.declarations.IrFile
 import org.jetbrains.kotlin.ir.declarations.IrModuleFragment
 import org.jetbrains.kotlin.ir.symbols.IrSymbol
@@ -31,6 +35,7 @@ import org.jetbrains.kotlin.ir.util.addChild
 import org.jetbrains.kotlin.ir.util.addFile
 import org.jetbrains.kotlin.ir.util.file
 import org.jetbrains.kotlin.konan.target.CompilerOutputKind
+import org.jetbrains.kotlin.name.Name
 import org.jetbrains.kotlin.psi2ir.Psi2IrConfiguration
 import org.jetbrains.kotlin.psi2ir.Psi2IrTranslator
 import org.jetbrains.kotlin.utils.DFS
@@ -209,10 +214,20 @@ internal val psiToIrPhase = konanUnitPhase(
                     config.configuration.languageVersionSettings
             )
             val irProviderForInteropStubs = IrProviderForInteropStubs { symbol ->
-                symbol.findCEnumDescriptor(interopBuiltIns) != null
+                symbol.findCEnumDescriptor(interopBuiltIns) != null ||
+                        symbol.findCStructDescriptor(interopBuiltIns) != null
             }
+            // These guys should not affect old interop libraries.
             val irProviderForCEnumStubs = IrProviderForCEnumStubs(generatorContext, interopBuiltIns)
-            val irProviders = listOf(irProviderForCEnumStubs, irProviderForInteropStubs, functionIrClassFactory, deserializer, stubGenerator)
+            val irProviderForCStructStubs = IrProviderForCStructStubs(generatorContext, interopBuiltIns)
+            val irProviders = listOf(
+                    irProviderForCStructStubs,
+                    irProviderForCEnumStubs,
+                    irProviderForInteropStubs,
+                    functionIrClassFactory,
+                    deserializer,
+                    stubGenerator
+            )
 
             stubGenerator.setIrProviders(irProviders)
 
@@ -240,6 +255,7 @@ internal val psiToIrPhase = konanUnitPhase(
 
             // TODO: Is it correct?
             irProviderForCEnumStubs.module = irModule!!
+            irProviderForCStructStubs.module = irModule!!
             functionIrClassFactory.module =
                     (listOf(irModule!!) + deserializer.modules.values)
                             .single { it.descriptor.isKonanStdlib() }
