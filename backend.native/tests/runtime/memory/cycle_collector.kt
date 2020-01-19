@@ -2,7 +2,6 @@ import kotlin.native.concurrent.*
 import kotlin.native.internal.GC
 import kotlin.test.*
 
-
 fun test1() {
     val a = AtomicReference<Any?>(null)
     val b = AtomicReference<Any?>(null)

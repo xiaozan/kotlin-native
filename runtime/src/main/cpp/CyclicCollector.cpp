@@ -43,7 +43,7 @@
 /**
  * Theory of operations:
  *
- * Kotlin/Native runtime has incremental cyclic garbage collection for the shared objects,
+ * Kotlin/Native runtime has incremental cyclic garbage collection for the shared mutable objects,
  * such as `AtomicReference` and `FreezableAtomicReference` instances (further known as the atomic rootset).
  * We perform such analysis by iterating over the transitive closure of the atomic rootset, and computing
  * aggregated inner reference counter for rootset elements over this transitive closure.
@@ -61,12 +61,10 @@
  * as all elements of this closure are frozen.
  * To handle such mutations we keep collector flag, which is cleared before analysis and set on every
  * atomic reference value update. If flag's value changes - collector restarts its analysis.
- * There are some complications in this algorithm due to delayed reference counting: namely we have to execute
- * callback on each worker which will take into account reference counts coming from the stack references of such
- * a worker.
- * It means, we could perform actual collection only after all registered workers completed rendezvouz which performs
- * such an accounting. As we have to perform such an operation anyway, we also release objects found by the collector
- * on a rendezvouz callback, but not on the main thread, to keep UI responsive.
+ * There are not so much of complications in this algorithm due to the delayed reference counting as if there's a
+ * stack reference to the shared object - it's reflected in the reference counter (see rememberNewContainer()).
+ * We release objects found by the collector on a rendezvouz callback, but not on the main thread,
+ * to keep UI responsive.
  */
 namespace {
 
@@ -139,7 +137,7 @@ class CyclicCollector {
       CHECK_CALL(pthread_cond_signal(&cond_), "Cannot signal collector")
     }
     // TODO: improve waiting for collector termination.
-    while (atomicGet(&terminateCollector_)) {   }
+    while (atomicGet(&terminateCollector_)) {}
     releasePendingUnlocked(nullptr);
     pthread_cond_destroy(&cond_);
     pthread_mutex_destroy(&lock_);
@@ -170,12 +168,23 @@ class CyclicCollector {
        Locker locker(&lock_);
        KStdDeque<ObjHeader*> toVisit;
        KStdUnorderedSet<ObjHeader*> visited;
+       int restartCount = 0;
        while (!terminateCollector_) {
          CHECK_CALL(pthread_cond_wait(&cond_, &lock_), "Cannot wait collector condition")
          if (!shallRunCollector_) continue;
          atomicSet(&gcRunning_, 1);
          alreadySeenWorkers_.clear();
+         restartCount = 0;
         restart:
+         if (restartCount > 10) {
+           COLLECTOR_LOG("wait for some time to avoid GC trashing\n");
+           struct timeval tv;
+           struct timespec ts;
+           long long nsDelta = 1000LL * 1000LL;
+           ts.tv_nsec = (tv.tv_usec * 1000LL + nsDelta) % 1000000000LL;
+           ts.tv_sec = (tv.tv_sec * 1000000000LL + nsDelta) / 1000000000LL;
+           pthread_cond_timedwait(&cond_, &lock_, &ts);
+         }
          atomicSet(&mutatedAtomics_, 0);
          rootset_.clear();
          visited.clear();
@@ -193,7 +202,8 @@ class CyclicCollector {
              }
            });
            if (atomicGet(&mutatedAtomics_) != 0) {
-             COLLECTOR_LOG("restarted during visiting collect")
+             COLLECTOR_LOG("restarted during visiting collect\n")
+             restartCount++;
              goto restart;
            }
            while (toVisit.size() > 0)  {
@@ -205,7 +215,8 @@ class CyclicCollector {
              }
              visited.insert(obj);
              if (atomicGet(&mutatedAtomics_) != 0) {
-               COLLECTOR_LOG("restarted during rootset visit")
+               COLLECTOR_LOG("restarted during rootset visit\n")
+               restartCount++;
                goto restart;
              }
              traverseObjectFields(obj, [&toVisit, &visited](ObjHeader** location) {
@@ -217,17 +228,22 @@ class CyclicCollector {
            }
          }
          for (auto it: rootsRefCounts_) {
-           COLLECTOR_LOG("for %p inner %d actual %d\n", it.first, it.second, it.first->container()->refCount());
-           // All references are inner. Actually we compare the number of counted
-           // inner references minus number of stack references with the number of non-stack references
-           // actualized in the object's reference counter.
-           if (it.second == it.first->container()->refCount()) {
+           auto* root = it.first;
+           auto* rootContainer = root->container();
+           // Ignore non-frozen freezable atomic references.
+           if (!rootContainer->frozen()) continue;
+           COLLECTOR_LOG("for %p inner %d actual %d\n", root, it.second, rootContainer->refCount());
+           // All references are inner. We compare the number of counted
+           // inner references with the number of non-stack references and per-thread ownership value
+           // (see rememberNewContainer()).
+           if (it.second == rootContainer->refCount()) {
              COLLECTOR_LOG("adding %p to release candidates\n", it.first);
              toRelease_.insert(it.first);
            }
            if (atomicGet(&mutatedAtomics_) != 0) {
-             COLLECTOR_LOG("restarted during rootset analysis")
+             COLLECTOR_LOG("restarted during rootset analysis\n")
              toRelease_.clear();
+             restartCount++;
              goto restart;
            }
          }
@@ -250,30 +266,32 @@ class CyclicCollector {
     Locker lock(&lock_);
     // When exiting the worker - we shall collect the cyclic garbage here.
     shallCollectGarbage_ = true;
-    rendezvouzLocked(worker);
+    shallRunCollector_ = true;
+    CHECK_CALL(pthread_cond_signal(&cond_), "Cannot signal collector")
     currentAliveWorkers_--;
   }
 
-  // TODO: this mechanism doesn't allow proper handling of references passed from one stack
-  // to another between rendezvouz points.
   void addRoot(ObjHeader* obj) {
     COLLECTOR_LOG("add root %p\n", obj);
     // Actually taking the lock when mutating atomic rootset is the most important part here,
     // setting reference counter is optional.
+    // TODO: we can only add root when collector is paused, which looks like a limitation,
+    //  instead we can add elements to the side buffer.
     Locker lock(&lock_);
     rootsRefCounts_[obj] = 0;
   }
 
   void removeRoot(ObjHeader* obj) {
     COLLECTOR_LOG("remove root %p\n", obj);
+    // Note that we can only remove root when collector is paused.
     Locker lock(&lock_);
     rootsRefCounts_.erase(obj);
     toRelease_.erase(obj);
   }
 
   void mutateRoot(ObjHeader* newValue) {
-    // TODO: consider optimization, when clearing value in atomic reference shall not lead
-    //   to invalidation of collector analysis state.
+    // TODO: consider optimization, when clearing value (setting to null) in atomic reference shall not lead
+    //   to invalidation of the collector analysis state.
     atomicSet(&mutatedAtomics_, 1);
   }
 
@@ -284,6 +302,7 @@ class CyclicCollector {
     if (delta > 10 || delta < 0) {
       auto currentTimestampUs = konan::getTimeMicros();
       if (currentTimestampUs - atomicGet(&lastTimestampUs_) > 10000) {
+        // TODO: take another lock.
         Locker locker(&lock_);
         lastTick_ = currentTick_;
         lastTimestampUs_ = currentTimestampUs;
@@ -299,28 +318,10 @@ class CyclicCollector {
     collector->countLocked(obj, 1);
   }
 
-  static void stackCounterCallback(void* argument, ObjHeader* obj) {
-    CyclicCollector* collector = reinterpret_cast<CyclicCollector*>(argument);
-    collector->countLocked(obj, -1);
-  }
-
   void countLocked(ObjHeader* obj, int delta) {
     if (isAtomicReference(obj)) {
       rootsRefCounts_[obj] += delta;
     }
-  }
-
-  void rendezvouzLocked(void* worker) {
-    if (alreadySeenWorkers_.count(worker) > 0) {
-      return;
-    }
-    GC_StackWalk(stackCounterCallback, this);
-    alreadySeenWorkers_.insert(worker);
-    if (alreadySeenWorkers_.size() == currentAliveWorkers_) {
-       // All workers processed, initiate GC.
-       shallRunCollector_ = true;
-       CHECK_CALL(pthread_cond_signal(&cond_), "Cannot signal collector")
-     }
   }
 
   void releasePendingUnlocked(void* worker) {
@@ -345,7 +346,8 @@ class CyclicCollector {
     releasePendingUnlocked(worker);
     if (!checkIfShallCollect()) return;
     Locker locker(&lock_);
-    rendezvouzLocked(worker);
+    shallRunCollector_ = true;
+    CHECK_CALL(pthread_cond_signal(&cond_), "Cannot signal collector")
   }
 
   void scheduleGarbageCollect() {
@@ -377,25 +379,29 @@ void cyclicDeinit() {
 
 void cyclicAddWorker(void* worker) {
 #if WITH_WORKERS
-  cyclicCollector->addWorker(worker);
+  if (cyclicCollector)
+    cyclicCollector->addWorker(worker);
 #endif  // WITH_WORKERS
 }
 
 void cyclicRemoveWorker(void* worker) {
 #if WITH_WORKERS
-  cyclicCollector->removeWorker(worker);
+  if (cyclicCollector)
+    cyclicCollector->removeWorker(worker);
 #endif  // WITH_WORKERS
 }
 
 void cyclicRendezvouz(void* worker) {
 #if WITH_WORKERS
-  cyclicCollector->rendezvouz(worker);
+  if (cyclicCollector)
+    cyclicCollector->rendezvouz(worker);
 #endif  // WITH_WORKERS
 }
 
 void cyclicScheduleGarbageCollect() {
 #if WITH_WORKERS
-  cyclicCollector->scheduleGarbageCollect();
+  if (cyclicCollector)
+    cyclicCollector->scheduleGarbageCollect();
 #endif  // WITH_WORKERS
 }
 

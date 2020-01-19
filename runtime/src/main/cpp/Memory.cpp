@@ -2833,22 +2833,6 @@ ArrayHeader* ArenaContainer::PlaceArray(const TypeInfo* type_info, uint32_t coun
   return result;
 }
 
-
-void GC_StackWalk(object_callback_t callback, void* argument) {
-  FrameOverlay* frame = currentFrame;
-  while (frame != nullptr) {
-    ObjHeader** current = reinterpret_cast<ObjHeader**>(frame + 1) + frame->parameters;
-    ObjHeader** end = current + frame->count - kFrameOverlaySlots - frame->parameters;
-    while (current < end) {
-      ObjHeader* obj = *current++;
-      if (obj != nullptr) {
-        callback(argument, obj);
-      }
-    }
-    frame = frame->previous;
-  }
-}
-
 void GC_AtomicRootsWalk(object_callback_t callback, void* argument) {
   lock(&g_leakCheckerGlobalLock);
   auto* candidate = g_leakCheckerGlobalList;
